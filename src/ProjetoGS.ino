@@ -1,402 +1,338 @@
-// Inclusão das bibliotecas necessárias para o sensor DHT22
 #include <wire.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include <Ultrasonic.h>
 #include <SHA256.h>
- 
-// Definição dos pinos para os dispositivos conectados ao ESP32
-#define DHT_PIN 16        // Sensor DHT22 conectado ao pino D4
-#define LED_VERMELHO 23        // LED AZUL conectado ao pino D2
-#define LED_AMARELO 22        // LED VERMELHO conectado ao pino D2
-#define LED_VERDE 21      // LED VERDE conectado ao pino D2
-#define DHT_TYPE DHT22   // Definição do tipo de sensor DHT
-#define LDR 4
-#define BOTAO_PIN 17
-#define TRIG_PIN 5
-#define ECHO_PIN 18
-#define POTENCIOMETRO 27
+#include "config.h"
 
- 
-// Instância do sensor DHT22 e Ultrasonic
 DHT dht(DHT_PIN, DHT_TYPE);
 Ultrasonic ultrasonic(TRIG_PIN, ECHO_PIN);
 
-// Variaveis ADMIN
+// --- Tipos ---
 
-// const String SENHA = "ADMINGS"
-const String hashSENHA = "6c0db579efe383b1ec2a86c95338a6e1b4c874378434f6b86d26d9f4808c5e05";
-bool modoAdmin = false;
-bool alertaEnviado = false;
+struct LeituraSensores {
+  float temp;
+  float umid;
+  float lux;
+  int   dist;
+  int   potenc;
+  bool  valida;  // false se DHT retornou NaN
+};
 
-// Variaveis Milis
-unsigned long previousMillis = 0;
-const long interval = 50; //1 segundo (para simular 30 minutos usar 1.800.000)
+enum NivelRisco   { SEGURO, ALERTA, PERIGO };
+enum EstadoSistema { NORMAL, AGUARDANDO_SENHA, BLOQUEADO, ADMIN };
+
+// --- Estado global ---
+EstadoSistema estado = NORMAL;
+unsigned long previousMillis       = 0;
+unsigned long adminUltimaAtividade = 0;
+unsigned long bloqueioInicio       = 0;
+int tentativasRestantes = ADMIN_MAX_TENTATIVAS;
 int Contador = 1;
 
- 
-void setup() {
-  Serial.begin(115200);
-  dht.begin();
-  pinMode(LDR, INPUT);
-  pinMode(POTENCIOMETRO, INPUT);
-  pinMode(BOTAO_PIN, INPUT_PULLUP);
-  pinMode(LED_AMARELO, OUTPUT);
-  pinMode(LED_VERDE, OUTPUT);
-  pinMode(LED_VERMELHO, OUTPUT);
- 
-  Serial.println("Temperatura (ºC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibração do solo, Status Risco");
-}
-
-// Função para Gerar Hash com a entrada da senha
-String gerarHashSHA256(String entrada) {
+// ---------------------------------------------------------------------------
+// Hash SHA256
+// ---------------------------------------------------------------------------
+String gerarHashSHA256(const String& entrada) {
   SHA256 sha256;
   sha256.reset();
   sha256.update((const uint8_t*)entrada.c_str(), entrada.length());
-  
   uint8_t resultado[32];
   sha256.finalize(resultado, sizeof(resultado));
-
-  String hashHex = "";
+  String hex = "";
   for (int i = 0; i < 32; i++) {
-    if (resultado[i] < 16) hashHex += "0";
-    hashHex += String(resultado[i], HEX);
+    if (resultado[i] < 16) hex += "0";
+    hex += String(resultado[i], HEX);
   }
-
-  return hashHex;
+  return hex;
 }
 
-// Função para entrar no modo admin
-void entrarModoAdmin() {
-  const int tentativasMax = 3;
-  int tentativas = tentativasMax;
-  const unsigned long tempoBloqueio = 30000; // 30 segundos
-  unsigned long bloqueioInicio = 0;
+// ---------------------------------------------------------------------------
+// Leitura dos sensores
+// ---------------------------------------------------------------------------
+LeituraSensores lerSensores() {
+  LeituraSensores s;
+  s.temp   = dht.readTemperature();
+  s.umid   = dht.readHumidity();
+  s.dist   = ultrasonic.distanceRead();
+  s.potenc = analogRead(POTENCIOMETRO);
+  s.valida = !(isnan(s.temp) || isnan(s.umid));
 
-  Serial.println("Digite a senha ou 'EXIT' para sair:");
+  // LDR → lux com proteção contra divisão por zero
+  float ldrADC    = (float)map(analogRead(LDR_PIN), 4095, 0, 1024, 0);
+  float tensao    = ldrADC / 1024.0f * 5.0f;
+  float denom     = 1.0f - tensao / 5.0f;
+  float resist    = (fabsf(denom) < 1e-6f) ? 1e6f : (2000.0f * tensao / denom);
+  s.lux = (float)pow(50e3 * pow(10.0, 0.7) / resist, 1.0 / 0.7);
 
-  while (true) {
-    if (tentativas == 0) {
-      bloqueioInicio = millis();
-      Serial.println("Muitas tentativas incorretas. Aguardando 30 segundos...");
+  return s;
+}
 
-      // Espera sem travar o sistema pisca todos os leds
-      while (millis() - bloqueioInicio < tempoBloqueio) {
-        digitalWrite(LED_AMARELO, HIGH);
-        digitalWrite(LED_VERDE, HIGH);
-        digitalWrite(LED_VERMELHO, HIGH);
-        delay(650);
-        digitalWrite(LED_AMARELO, LOW);
-        digitalWrite(LED_VERDE, LOW);
-        digitalWrite(LED_VERMELHO, LOW);
-        delay(650);
-      }
+// ---------------------------------------------------------------------------
+// Avaliação de risco
+// ---------------------------------------------------------------------------
+NivelRisco avaliarRisco(const LeituraSensores& s) {
+  if (!s.valida) return PERIGO;  // falha de sensor = conservador
 
-      tentativas = tentativasMax;
-      Serial.println("Você pode tentar novamente. Digite a senha ou 'EXIT' para sair:");
+  bool perigo = false, alerta = false;
+
+  // Temperatura
+  if      (s.temp > TEMP_PERIGO_ALTO  || s.temp < TEMP_PERIGO_BAIXO)  perigo = true;
+  else if (s.temp > TEMP_ALERTA_ALTO  || s.temp < TEMP_ALERTA_BAIXO)  alerta = true;
+
+  // Umidade
+  if      (s.umid > UMID_PERIGO_ALTO  || s.umid < UMID_PERIGO_BAIXO)  perigo = true;
+  else if (s.umid > UMID_ALERTA_ALTO  || s.umid < UMID_ALERTA_BAIXO)  alerta = true;
+
+  // Luminosidade
+  if      (s.lux < LUX_PERIGO_BAIXO  || s.lux > LUX_PERIGO_ALTO)     perigo = true;
+  else if (s.lux < LUX_ALERTA_BAIXO  || s.lux > LUX_ALERTA_ALTO)     alerta = true;
+
+  // Nível da água
+  if      (s.dist < DIST_PERIGO)   perigo = true;
+  else if (s.dist < DIST_ALERTA)   alerta = true;
+
+  // Vibração
+  if      (s.potenc > VIBRACAO_PERIGO)   perigo = true;
+  else if (s.potenc > VIBRACAO_ALERTA)   alerta = true;
+
+  return perigo ? PERIGO : (alerta ? ALERTA : SEGURO);
+}
+
+// ---------------------------------------------------------------------------
+// Texto descritivo de risco (para coluna Status Risco)
+// ---------------------------------------------------------------------------
+String textoRisco(const LeituraSensores& s, NivelRisco nivel) {
+  if (!s.valida)      return "ERRO: falha no sensor DHT";
+  if (nivel == SEGURO) return "SEGURO: Nenhum risco detectado";
+
+  String riscos = "";
+
+  // Temperatura
+  if      (s.temp > TEMP_PERIGO_ALTO)   riscos += "Calor extremo; ";
+  else if (s.temp > TEMP_ALERTA_ALTO)   riscos += "Calor alto (alerta); ";
+  if      (s.temp < TEMP_PERIGO_BAIXO)  riscos += "Frio extremo; ";
+  else if (s.temp < TEMP_ALERTA_BAIXO)  riscos += "Frio baixo (alerta); ";
+
+  // Umidade
+  if      (s.umid > UMID_PERIGO_ALTO)   riscos += "Umidade extrema; ";
+  else if (s.umid > UMID_ALERTA_ALTO)   riscos += "Umidade alta (alerta); ";
+  if      (s.umid < UMID_PERIGO_BAIXO)  riscos += "Umidade muito baixa; ";
+  else if (s.umid < UMID_ALERTA_BAIXO)  riscos += "Umidade baixa (alerta); ";
+
+  // Luminosidade
+  if      (s.lux < LUX_PERIGO_BAIXO)   riscos += "Luminosidade extremamente baixa (fumaca densa/possivel incendio); ";
+  else if (s.lux < LUX_ALERTA_BAIXO)   riscos += "Luminosidade baixa (fumaca moderada); ";
+  if      (s.lux > LUX_PERIGO_ALTO)    riscos += "Luminosidade critica (possivel presenca de chamas); ";
+  else if (s.lux > LUX_ALERTA_ALTO)    riscos += "Luminosidade alta (luz intensa, alerta); ";
+
+  // Nível da água
+  if      (s.dist < DIST_PERIGO)   riscos += "Enchente iminente; ";
+  else if (s.dist < DIST_ALERTA)   riscos += "Nivel da agua elevado (alerta); ";
+
+  // Vibração
+  if      (s.potenc > VIBRACAO_PERIGO)   riscos += "Vibracao forte detectada! Possivel deslizamento; ";
+  else if (s.potenc > VIBRACAO_ALERTA)   riscos += "Vibracao moderada (alerta); ";
+
+  String prefixo = (nivel == PERIGO) ? "PERIGO: " : "ALERTA: ";
+  return prefixo + riscos;
+}
+
+// ---------------------------------------------------------------------------
+// Classificação ML (0–6) alinhada com as 7 classes do modelo treinado
+//   0=Seguro  1=Calor/Umidade  2=Incêndio/Fumaça  3=Vibração Moderada
+//   4=Deslizamento  5=Alerta Enchente  6=Enchente
+// ---------------------------------------------------------------------------
+int classificarDesastre(const LeituraSensores& s) {
+  if (!s.valida) return 1;  // sensor inválido = alerta conservador
+  if (s.dist < DIST_PERIGO)                                              return 6;
+  if (s.potenc > VIBRACAO_PERIGO)                                         return 4;
+  if (s.lux < LUX_PERIGO_BAIXO || s.lux > LUX_PERIGO_ALTO)              return 2;
+  if (s.dist < DIST_ALERTA)                                              return 5;
+  if (s.potenc > VIBRACAO_ALERTA)                                         return 3;
+  if (s.temp > TEMP_PERIGO_ALTO  || s.temp < TEMP_PERIGO_BAIXO ||
+      s.umid > UMID_PERIGO_ALTO  || s.umid < UMID_PERIGO_BAIXO)         return 1;
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// LEDs
+// ---------------------------------------------------------------------------
+void atualizarLEDs(NivelRisco nivel) {
+  digitalWrite(LED_AMARELO,  nivel == ALERTA ? HIGH : LOW);
+  digitalWrite(LED_VERMELHO, nivel == PERIGO ? HIGH : LOW);
+  digitalWrite(LED_VERDE,    nivel == SEGURO ? HIGH : LOW);
+}
+
+// ---------------------------------------------------------------------------
+// Formatação CSV — Modo Normal
+// Colunas: Temperatura, Umidade, Luminosidade(bool), NivelAgua(bool), Vibracao(bool), StatusRisco
+// ---------------------------------------------------------------------------
+String formatarCSVNormal(const LeituraSensores& s, const String& riscoResumo) {
+  if (!s.valida) return "NaN, NaN, 0, 0, 0, ERRO: falha no sensor DHT";
+
+  bool luzAnomala       = (s.lux < LUX_ALERTA_BAIXO || s.lux > LUX_ALERTA_ALTO);
+  bool nivelDetectado   = (s.dist < DIST_ALERTA);
+  bool vibracaoAtiva    = (s.potenc > VIBRACAO_ALERTA);
+
+  String csv = "";
+  csv += String(s.temp, 2)    + ", ";
+  csv += String((int)s.umid)  + ", ";
+  csv += String(luzAnomala)   + ", ";
+  csv += String(nivelDetectado) + ", ";
+  csv += String(vibracaoAtiva)  + ", ";
+  csv += riscoResumo;
+  return csv;
+}
+
+// ---------------------------------------------------------------------------
+// Formatação CSV — Modo Admin
+// Colunas: Data, ID, Temperatura, Umidade, Luminosidade, NivelAgua, Vibracao, StatusRisco, SaidaML
+// ---------------------------------------------------------------------------
+String formatarCSVAdmin(const LeituraSensores& s, int id,
+                        int day, int hour, int minute,
+                        const String& riscoResumo, int labelML) {
+  String csv = "Dia ";
+  csv += String(day) + " ";
+  if (hour < 10)   csv += "0";
+  csv += String(hour) + ":";
+  if (minute < 10) csv += "0";
+  csv += String(minute) + ", ";
+  csv += String(id) + ", ";
+  csv += (s.valida ? String(s.temp, 2) : "NaN") + ", ";
+  csv += (s.valida ? String((int)s.umid) : "NaN") + ", ";
+  csv += String(s.lux)    + ", ";
+  csv += String(s.dist)   + ", ";
+  csv += String(s.potenc) + ", ";
+  csv += riscoResumo      + ", ";
+  csv += String(labelML);
+  return csv;
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp simulado (cada tick = 30 minutos)
+// ---------------------------------------------------------------------------
+void calcularTempo(int contador, int& day, int& hour, int& minute) {
+  unsigned long totalMinutes = (unsigned long)(contador - 1) * 30;
+  minute = totalMinutes % 60;
+  hour   = (totalMinutes / 60) % 24;
+  day    = 1 + (int)(totalMinutes / (24 * 60));
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  pinMode(LDR_PIN,      INPUT);
+  pinMode(POTENCIOMETRO, INPUT);
+  pinMode(BOTAO_PIN,    INPUT_PULLUP);
+  pinMode(LED_AMARELO,  OUTPUT);
+  pinMode(LED_VERDE,    OUTPUT);
+  pinMode(LED_VERMELHO, OUTPUT);
+  Serial.println("Temperatura (oC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibracao do solo, Status Risco");
+}
+
+// ---------------------------------------------------------------------------
+// Loop principal — máquina de estados não-bloqueante
+// ---------------------------------------------------------------------------
+void loop() {
+  unsigned long now = millis();
+
+  // --- BLOQUEADO: aguarda lockout expirar, pisca LEDs ---
+  if (estado == BLOQUEADO) {
+    bool ligado = ((now - bloqueioInicio) / 650) % 2 == 0;
+    digitalWrite(LED_AMARELO,  ligado ? HIGH : LOW);
+    digitalWrite(LED_VERDE,    ligado ? HIGH : LOW);
+    digitalWrite(LED_VERMELHO, ligado ? HIGH : LOW);
+    if (now - bloqueioInicio >= ADMIN_BLOQUEIO_MS) {
+      tentativasRestantes = ADMIN_MAX_TENTATIVAS;
+      estado = AGUARDANDO_SENHA;
+      Serial.println("Voce pode tentar novamente. Digite a senha ou 'EXIT' para sair:");
     }
+    return;
+  }
 
+  // --- AGUARDANDO_SENHA: valida entrada serial ---
+  if (estado == AGUARDANDO_SENHA) {
     if (Serial.available()) {
       String entrada = Serial.readStringUntil('\n');
       entrada.trim();
+      if (entrada.length() > 64) entrada = "";  // proteção contra overflow
 
       if (entrada == "EXIT") {
-        modoAdmin = false;
+        estado = NORMAL;
         Serial.println("Saindo do modo admin...");
-        break;
-      }
-
-      String hashEntrada = gerarHashSHA256(entrada);
-      if (hashEntrada == hashSENHA) {
-        modoAdmin = true;
+        Serial.println("Temperatura (oC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibracao do solo, Status Risco");
+      } else if (gerarHashSHA256(entrada) == ADMIN_HASH) {
+        estado = ADMIN;
+        adminUltimaAtividade = now;
+        tentativasRestantes  = ADMIN_MAX_TENTATIVAS;
         Serial.println("Acesso concedido ao modo admin!");
-        Serial.println("Data, ID, Temperatura (ºC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibração do solo, Status Risco, Saída ML");
-        break;
+        Serial.println("Data, ID, Temperatura (oC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibracao do solo, Status Risco, Saida ML");
       } else {
-        tentativas--;
-        Serial.print("Senha incorreta. Tentativas restantes: ");
-        Serial.println(tentativas);
+        tentativasRestantes--;
+        if (tentativasRestantes == 0) {
+          bloqueioInicio = now;
+          estado = BLOQUEADO;
+          Serial.println("Muitas tentativas incorretas. Aguardando 30 segundos...");
+        } else {
+          Serial.print("Senha incorreta. Tentativas restantes: ");
+          Serial.println(tentativasRestantes);
+        }
       }
+    }
+    return;
+  }
+
+  // --- Tick de leitura (NORMAL e ADMIN) ---
+  if (now - previousMillis < LOOP_INTERVAL_MS) return;
+  previousMillis = now;
+
+  // Botão → iniciar autenticação (apenas no modo NORMAL)
+  if (estado == NORMAL && digitalRead(BOTAO_PIN) == LOW) {
+    estado = AGUARDANDO_SENHA;
+    tentativasRestantes = ADMIN_MAX_TENTATIVAS;
+    Serial.println("Digite a senha ou 'EXIT' para sair:");
+    return;
+  }
+
+  // Modo ADMIN: verifica comando EXIT e timeout por inatividade
+  if (estado == ADMIN) {
+    if (Serial.available()) {
+      String cmd = Serial.readStringUntil('\n');
+      cmd.trim();
+      adminUltimaAtividade = now;
+      if (cmd == "EXIT") {
+        estado = NORMAL;
+        Serial.println("Saindo do modo admin...");
+        Serial.println("Temperatura (oC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibracao do solo, Status Risco");
+        return;
+      }
+    }
+    if (now - adminUltimaAtividade > ADMIN_TIMEOUT_MS) {
+      estado = NORMAL;
+      Serial.println("Timeout: saindo do modo admin por inatividade.");
+      Serial.println("Temperatura (oC), Umidade (%), Luminosidade (LUX), Nivel da agua, Vibracao do solo, Status Risco");
+      return;
     }
   }
-}
 
+  // --- Leitura e saída ---
+  LeituraSensores sensores = lerSensores();
+  NivelRisco nivel         = avaliarRisco(sensores);
+  String riscoResumo       = textoRisco(sensores, nivel);
+  atualizarLEDs(nivel);
 
-void loop() {
-  unsigned long currentMillis = millis();
-
-  // inicio do Millis 
-  if (currentMillis-previousMillis >= interval) {
-    previousMillis = currentMillis;
-    
-    if(!modoAdmin){
-      //Leitura dos sensores
-      float temp = dht.readTemperature();
-      float umid = dht.readHumidity();
-      int dist = ultrasonic.distanceRead();
-      int botao = digitalRead(BOTAO_PIN) == LOW ? 1:0;  
-      int potenc = analogRead(POTENCIOMETRO); // Simular como se fosse um sensor SW-420 (digital)
-      
-      // Transformar ADC em LUX
-      int ldr = analogRead(LDR);
-      ldr = map(ldr, 4095, 0, 1024, 0);  // Converte a leitura do sensor LDR de um valor ADC do Arduino para um valor ADC do ESP32
-      float tensao = ldr / 1024.0 * 5;  // Calcula a tensão com base na leitura do LDR
-      float resistencia = 2000 * tensao / (1 - tensao / 5);  // Calcula a resistência do LDR
-      float lux = pow(50 * 1e3 * pow(10, 0.7) / resistencia, (1 / 0.7));  // Calcula a luminosidade em lux
-
-      // Simular como se fosse um sensor SW-420 (digital)
-      bool vibracaoDetectada = (potenc > 3000); // valor ajustável
-      bool nivelDetectado = (dist < 100); // valor ajustável
-      bool luzDetectadaeNaoDetectada = (lux < 500 || lux > 2000); // True para lux < 500 (> 2000 lux, alertas)
-
-      // Inicialização
-      String riscosDetectados = "";
-      bool alerta = false;
-      bool perigo = false;
-
-      // RISCO 1: Temperatura Extrema
-      if (temp > 45.0) {
-        riscosDetectados += "Calor extremo; ";
-        perigo = true; // Temperatura perigosa
-      } else if (temp > 35.0) {
-        riscosDetectados += "Calor alto (alerta); ";
-        alerta = true;
-      } else if (temp < -5.0) {
-        riscosDetectados += "Frio extremo; ";
-        perigo = true;
-      } else if (temp < 15.0) {
-        riscosDetectados += "Frio baixo (alerta); ";
-        alerta = true;
-      }
-
-      // RISCO 2: Umidade
-      if (umid > 90.0) {
-        riscosDetectados += "Umidade extrema; ";
-        perigo = true;
-      } else if (umid > 70.0) {
-        riscosDetectados += "Umidade alta (alerta); ";
-        alerta = true;
-      } else if (umid < 10.0) {
-        riscosDetectados += "Umidade muito baixa; ";
-        perigo = true;
-      } else if (umid < 30.0) {
-        riscosDetectados += "Umidade baixa (alerta); ";
-        alerta = true;
-      }
-
-      // RISCO 3: Luminosidade (fumaça ou chamas)
-      if (lux < 100) {
-        riscosDetectados += "Luminosidade extremamente baixa (fumaça densa/possível incêndio); ";
-        perigo = true;
-      } else if (lux >= 100 && lux < 500) {
-        riscosDetectados += "Luminosidade baixa (fumaça moderada); ";
-        alerta = true;
-      } else if (lux >= 2000 && lux <= 8000) {
-        riscosDetectados += "Luminosidade alta (luz intensa, alerta); ";
-        alerta = true;
-      } else if (lux > 8000) {
-        riscosDetectados += "Luminosidade crítica (possível presença de chamas); ";
-        perigo = true;
-      }
-
-      // RISCO 4: Nível da água (enchente)
-      if (dist < 50) {
-        riscosDetectados += "Enchente iminente; ";
-        perigo = true;
-      } else if (dist < 100) {
-        riscosDetectados += "Nível da água elevado (alerta); ";
-        alerta = true;
-      }
-
-      // RISCO 5: Vibração (deslizamento ou incêndio)
-      if (potenc > 4000) {
-        riscosDetectados += "Vibração forte detectada! Possível deslizamento; ";
-        perigo = true;
-      } else if (potenc > 3000) {
-        riscosDetectados += "Vibração moderada (alerta); ";
-        alerta = true;
-      }
-
-      // DEFININDO STATUS FINAL
-      int ledStatus;
-      String riscoResumo;
-
-      if (perigo) {
-        ledStatus = 2;  // LED VERMELHO
-        riscoResumo = "PERIGO: " + riscosDetectados;
-      } else if (alerta) {
-        ledStatus = 1;  // LED AMARELO
-        riscoResumo = "ALERTA: " + riscosDetectados;
-      } else {
-        ledStatus = 3;  // LED VERDE
-        riscoResumo = "SEGURO: Nenhum risco detectado";
-      }
-
-      // Atualizando LEDs
-      digitalWrite(LED_AMARELO,  ledStatus == 1 ? HIGH : LOW);
-      digitalWrite(LED_VERMELHO, ledStatus == 2 ? HIGH : LOW);
-      digitalWrite(LED_VERDE,    ledStatus == 3 ? HIGH : LOW);
-
-
-      // Printar no formato CSV
-      //Serial.printf(temp, (int)umid, ldr, nivel da agua, vibração do solo, riscoStatus);
-      Serial.print(temp, 2);
-      Serial.print(", ");
-      Serial.print((int)umid);
-      Serial.print(", ");
-      Serial.print(luzDetectadaeNaoDetectada);
-      Serial.print(", ");
-      Serial.print(nivelDetectado);
-      Serial.print(", ");
-      Serial.print(vibracaoDetectada);
-      Serial.print(", ");
-      Serial.println(riscoResumo);
-      Contador++;
-    }
-    // Se o botão for pressionado e não estiver no modo admin
-    if (digitalRead(BOTAO_PIN) == LOW && !modoAdmin) {
-      entrarModoAdmin();
-    }
-
-    // Modo Admin Ativo
-    if (modoAdmin) {
-      // Obter data e hora (simulada via millis)
-      unsigned long totalMinutes = (Contador - 1) * 30;
-      int hour = (totalMinutes / 60) % 24;
-      int minute = totalMinutes % 60;
-      int day = 1 + (totalMinutes / (24 * 60));
-
-      //Leitura dos sensores
-      float temp = dht.readTemperature();
-      float umid = dht.readHumidity();
-      int dist = ultrasonic.distanceRead();
-      int botao = digitalRead(BOTAO_PIN) == LOW ? 1:0;  
-      int potenc = analogRead(POTENCIOMETRO); // Simular como se fosse um sensor SW-420 (digital)
-      
-      // Transformar ADC em LUX
-      int ldr = analogRead(LDR);
-      ldr = map(ldr, 4095, 0, 1024, 0);  // Converte a leitura do sensor LDR de um valor ADC do Arduino para um valor ADC do ESP32
-      float tensao = ldr / 1024.0 * 5;  // Calcula a tensão com base na leitura do LDR
-      float resistencia = 2000 * tensao / (1 - tensao / 5);  // Calcula a resistência do LDR
-      float lux = pow(50 * 1e3 * pow(10, 0.7) / resistencia, (1 / 0.7));  // Calcula a luminosidade em lux
-
-      // Inicialização
-      String riscosDetectados = "";
-      bool alerta = false;
-      bool perigo = false;
-
-      // RISCO 1: Temperatura Extrema
-      if (temp > 45.0) {
-        riscosDetectados += "Calor extremo; ";
-        perigo = true; // Temperatura perigosa
-      } else if (temp > 35.0) {
-        riscosDetectados += "Calor alto (alerta); ";
-        alerta = true;
-      } else if (temp < -5.0) {
-        riscosDetectados += "Frio extremo; ";
-        perigo = true;
-      } else if (temp < 15.0) {
-        riscosDetectados += "Frio baixo (alerta); ";
-        alerta = true;
-      }
-
-      // RISCO 2: Umidade
-      if (umid > 90.0) {
-        riscosDetectados += "Umidade extrema; ";
-        perigo = true;
-      } else if (umid > 70.0) {
-        riscosDetectados += "Umidade alta (alerta); ";
-        alerta = true;
-      } else if (umid < 10.0) {
-        riscosDetectados += "Umidade muito baixa; ";
-        perigo = true;
-      } else if (umid < 30.0) {
-        riscosDetectados += "Umidade baixa (alerta); ";
-        alerta = true;
-      }
-
-      // RISCO 3: Luminosidade (fumaça ou chamas)
-      if (lux < 100) {
-        riscosDetectados += "Luminosidade extremamente baixa (fumaça densa/possível incêndio); ";
-        perigo = true;
-      } else if (lux >= 100 && lux < 500) {
-        riscosDetectados += "Luminosidade baixa (fumaça moderada); ";
-        alerta = true;
-      } else if (lux >= 2000 && lux <= 8000) {
-        riscosDetectados += "Luminosidade alta (luz intensa alerta); ";
-        alerta = true;
-      } else if (lux > 8000) {
-        riscosDetectados += "Luminosidade crítica (possível presença de chamas); ";
-        perigo = true;
-      }
-
-      // RISCO 4: Nível da água (enchente)
-      if (dist < 50) {
-        riscosDetectados += "Enchente iminente; ";
-        perigo = true;
-      } else if (dist < 100) {
-        riscosDetectados += "Nível da água elevado (alerta); ";
-        alerta = true;
-      }
-
-      // RISCO 5: Vibração (deslizamento ou incêndio)
-      if (potenc > 4000) {
-        riscosDetectados += "Vibração forte detectada! Possível deslizamento; ";
-        perigo = true;
-      } else if (potenc > 3000) {
-        riscosDetectados += "Vibração moderada (alerta); ";
-        alerta = true;
-      }
-
-      // DEFININDO STATUS FINAL
-      int ledStatus;
-      String riscoResumo;
-      bool perigoDetectado = false;
-
-      if (perigo) {
-        ledStatus = 2;  // LED VERMELHO
-        riscoResumo = "PERIGO: " + riscosDetectados;
-        perigoDetectado = true; // <-- Rótulo de ML: PERIGO = 1
-      } else if (alerta) {
-        ledStatus = 1;  // LED AMARELO
-        riscoResumo = "ALERTA: " + riscosDetectados;
-      } else {
-        ledStatus = 3;  // LED VERDE
-        riscoResumo = "SEGURO: Nenhum risco detectado";
-      }
-
-      // Atualizando LEDs
-      digitalWrite(LED_AMARELO,  ledStatus == 1 ? HIGH : LOW);
-      digitalWrite(LED_VERMELHO, ledStatus == 2 ? HIGH : LOW);
-      digitalWrite(LED_VERDE,    ledStatus == 3 ? HIGH : LOW);
-
-        // Printar no formato CSV
-      //Serial.printf("\nDia %d %02d:%02d, %d, %.2f, %d, %d, %d, %d", dia, hora, minuto, ID, temp, (int)umid, ldr, nivel da agua, vibração do solo, riscoStatus, target(ML));
-      Serial.print("Dia ");
-      Serial.print(day);
-      Serial.print(" ");
-      if (hour < 10) Serial.print("0");
-      Serial.print(hour);
-      Serial.print(":");
-      if (minute < 10) Serial.print("0");
-      Serial.print(minute);
-      Serial.print(", ");
-      Serial.print(Contador);
-      Serial.print(", ");
-      Serial.print(temp, 2);
-      Serial.print(", ");
-      Serial.print((int)umid);
-      Serial.print(", ");
-      Serial.print(lux);
-      Serial.print(", ");
-      Serial.print(dist);
-      Serial.print(", ");
-      Serial.print(potenc);
-      Serial.print(", ");
-      Serial.print(riscoResumo);
-      Serial.print(", ");
-      Serial.println(perigoDetectado ? "1" : "0");
-      Contador++;
-    }      
+  if (estado == NORMAL) {
+    Serial.println(formatarCSVNormal(sensores, riscoResumo));
+  } else if (estado == ADMIN) {
+    int day, hour, minute;
+    calcularTempo(Contador, day, hour, minute);
+    int labelML = classificarDesastre(sensores);
+    Serial.println(formatarCSVAdmin(sensores, Contador, day, hour, minute, riscoResumo, labelML));
   }
+
+  Contador++;
 }
