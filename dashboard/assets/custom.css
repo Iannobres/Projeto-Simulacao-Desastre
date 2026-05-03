@@ -1,0 +1,204 @@
+/* ── Global ─────────────────────────────────────────────────── */
+body {
+    background-color: #0d1117 !important;
+    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+    color: #e6edf3;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* ── Tabs ───────────────────────────────────────────────────── */
+.nav-tabs {
+    border-bottom: 1px solid #30363d !important;
+    gap: 4px;
+}
+.nav-tabs .nav-link {
+    color: #8b949e !important;
+    background-color: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 6px 6px 0 0 !important;
+    padding: 8px 18px !important;
+    font-size: 0.85rem;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    transition: color 0.2s, border-color 0.2s;
+}
+.nav-tabs .nav-link:hover {
+    color: #e6edf3 !important;
+    border-color: #30363d #30363d transparent !important;
+    background-color: #161b22 !important;
+}
+.nav-tabs .nav-link.active {
+    color: #e74c3c !important;
+    background-color: #161b22 !important;
+    border-color: #e74c3c #30363d #161b22 !important;
+    border-top-width: 2px !important;
+    font-weight: 600;
+}
+
+/* ── KPI Cards ──────────────────────────────────────────────── */
+.kpi-card {
+    background-color: #161b22 !important;
+    border: 1px solid #21262d !important;
+    border-radius: 10px !important;
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+.kpi-card:hover {
+    border-color: #30363d !important;
+}
+
+/* Glow variants */
+.glow-green {
+    border: 1px solid #2ecc71 !important;
+    box-shadow: 0 0 16px rgba(46, 204, 113, 0.25) !important;
+}
+.glow-yellow {
+    border: 1px solid #f39c12 !important;
+    box-shadow: 0 0 16px rgba(243, 156, 18, 0.25) !important;
+}
+.glow-red {
+    border: 1px solid #e74c3c !important;
+    box-shadow: 0 0 16px rgba(231, 76, 60, 0.35) !important;
+}
+
+/* ── Pulsing status dot ─────────────────────────────────────── */
+.pulse-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background-color: #2ecc71;
+    animation: pulse-anim 1.8s ease-in-out infinite;
+    vertical-align: middle;
+}
+@keyframes pulse-anim {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.7); }
+    50%       { box-shadow: 0 0 0 7px rgba(46, 204, 113, 0); }
+}
+
+/* ── Upload zone ────────────────────────────────────────────── */
+.upload-zone {
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+.upload-zone:hover {
+    border-color: #e74c3c !important;
+    background-color: #1a1f29 !important;
+}
+
+/* ── Sensor labels ──────────────────────────────────────────── */
+.sensor-label {
+    color: #8b949e;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+/* ── Sliders Dash 4 (Radix UI) ───────────────────────────────── */
+
+/* Track base */
+.dash-slider-track {
+    background-color: #30363d !important;
+    height: 4px !important;
+    border-radius: 2px !important;
+}
+
+/* Range (parte preenchida) */
+.dash-slider-range {
+    background-color: #e74c3c !important;
+}
+
+/* Handle */
+.dash-slider-thumb {
+    width: 16px !important;
+    height: 16px !important;
+    background-color: #e74c3c !important;
+    border: 2px solid #ff6b5b !important;
+    border-radius: 50% !important;
+    box-shadow: 0 0 6px rgba(231, 76, 60, 0.5) !important;
+}
+.dash-slider-thumb:hover,
+.dash-slider-thumb:focus {
+    box-shadow: 0 0 0 6px rgba(231, 76, 60, 0.25) !important;
+}
+
+/* Tooltip always-visible (valor atual) */
+.dash-slider-tooltip {
+    background-color: #21262d !important;
+    color: #e6edf3 !important;
+    font-weight: 700 !important;
+    font-size: 0.78rem !important;
+    border: 1px solid #484f58 !important;
+    border-radius: 4px !important;
+    padding: 2px 7px !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
+}
+
+/* Marcações numéricas (marks) */
+.dash-slider-mark {
+    color: #c9d1d9 !important;
+    font-size: 0.72rem !important;
+    font-weight: 500 !important;
+    margin-top: 4px !important;
+}
+.dash-slider-mark-outside-selection {
+    color: #8b949e !important;
+}
+
+/* Dots nos marks */
+.dash-slider-dot {
+    background-color: #30363d !important;
+    border-color: #484f58 !important;
+}
+.dash-slider-dot-outside-selection {
+    background-color: #21262d !important;
+}
+
+/* ── Dropdown ───────────────────────────────────────────────── */
+.Select-control {
+    background-color: #161b22 !important;
+    border-color: #30363d !important;
+    color: #e6edf3 !important;
+}
+.Select-menu-outer {
+    background-color: #161b22 !important;
+    border-color: #30363d !important;
+}
+.Select-option { color: #e6edf3 !important; }
+.Select-option:hover,
+.Select-option.is-focused { background-color: #21262d !important; }
+
+/* ── Dash table ─────────────────────────────────────────────── */
+.dash-spreadsheet-container .dash-spreadsheet-inner td,
+.dash-spreadsheet-container .dash-spreadsheet-inner th {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+    font-size: 0.82rem !important;
+}
+
+/* ── Alert messages ─────────────────────────────────────────── */
+.alert {
+    border-radius: 8px !important;
+    font-size: 0.85rem;
+}
+
+/* ── Button ─────────────────────────────────────────────────── */
+.btn-danger {
+    background-color: #e74c3c !important;
+    border-color: #c0392b !important;
+    box-shadow: 0 0 12px rgba(231, 76, 60, 0.4);
+    transition: box-shadow 0.2s;
+}
+.btn-danger:hover {
+    box-shadow: 0 0 20px rgba(231, 76, 60, 0.7) !important;
+}
+
+/* ── Plotly chart container ─────────────────────────────────── */
+.js-plotly-plot .plotly .modebar {
+    background: transparent !important;
+}

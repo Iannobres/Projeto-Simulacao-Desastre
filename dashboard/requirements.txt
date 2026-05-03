@@ -1,4 +1,5 @@
-streamlit==1.57.0
+dash>=2.17.0
+dash-bootstrap-components>=1.6.0
 pandas==3.0.2
 numpy==2.4.4
 scikit-learn==1.8.0

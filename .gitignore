@@ -5,6 +5,7 @@
 .vscode/ipch
 .claude/
 .venv/
+dashboard/.venv/
 dashboard/*.log
 __pycache__/
 *.pyc
