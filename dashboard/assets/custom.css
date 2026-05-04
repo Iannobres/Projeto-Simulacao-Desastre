@@ -202,3 +202,22 @@ body {
 .js-plotly-plot .plotly .modebar {
     background: transparent !important;
 }
+
+/* ── Dropdown grid trigger (seletor de minutos) ─────────────── */
+.dash-dropdown-grid-container .dash-dropdown-trigger,
+.dash-dropdown-trigger {
+    color: #e6edf3 !important;
+    background-color: #21262d !important;
+    border: 1px solid #30363d !important;
+}
+
+/* ── Slider range input (campo numérico manual) ─────────────── */
+.dash-input-container input,
+.dash-range-slider-input input,
+.dash-range-slider-max-input input,
+input.dash-range-slider-input,
+input.dash-range-slider-max-input {
+    color: #e6edf3 !important;
+    background-color: #21262d !important;
+    border: 1px solid #30363d !important;
+}
